@@ -1,0 +1,23 @@
+plugins {
+    id 'java'
+}
+group = "com.lsxk"
+version = "1.0.0"
+dependencies {
+    compile group: 'org.projectlombok', name: 'lombok', version: '1.18.6'
+    compile group: 'com.alipay.sofa', name: 'bolt', version: '1.4.1'
+}
+
+repositories {
+    maven {
+        url 'http://maven.aliyun.com/nexus/content/repositories/central'
+    }
+
+    maven {
+        url 'http://artifactory.cde.huawei.com/artifactory/maven-public/'
+    }
+
+    maven {
+        url 'http://szg1.artifactory.inhuawei.com/artifactory/sz-maven-public'
+    }
+}
