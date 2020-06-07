@@ -15,6 +15,10 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+
+	//幂等性实现
+	Cid    int64
+	SeqNum int
 }
 
 type PutAppendReply struct {

@@ -1,10 +1,12 @@
 package raftkv
 
 import (
+	"fmt"
 	"labgob"
 	"labrpc"
 	"log"
 	"raft"
+	"strconv"
 	"sync"
 )
 
@@ -21,6 +23,13 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Optype string
+	Key    string
+	Value  string
+
+	// 幂等性
+	Cid    int64
+	SeqNum int
 }
 
 type KVServer struct {
@@ -32,14 +41,78 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	db    map[string]string
+	chMap map[int]chan Op
+
+	//幂等性
+	cid2Seq map[int64]int
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	originOp := Op{
+		Optype: "Get",
+		Key:    args.Key,
+		Value:  strconv.FormatInt(nrand(), 10),
+		Cid:    0,
+		SeqNum: 0,
+	}
+	reply.WrongLeader = true
+	_, isLeader := kv.rf.GetState()
+
+	if !isLeader {
+		return
+	}
+	index, _, isLeader := kv.rf.Start(originOp)
+	if !isLeader {
+		return
+	}
+
+	ch := kv.putIfAbsent(index)
+	op := <-ch
+
+	fmt.Printf("request is %v", originOp)
+	fmt.Println()
+
+	if equalOp(op, originOp) {
+		reply.WrongLeader = false
+		kv.mu.Lock()
+		reply.Value = kv.db[op.Key]
+		kv.mu.Unlock()
+		return
+	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	originOp := Op{
+		Optype: args.Op,
+		Key:    args.Key,
+		Value:  args.Value,
+		Cid:    args.Cid,
+		SeqNum: args.SeqNum,
+	}
+	_, isLeader := kv.rf.GetState()
+	reply.WrongLeader = true
+	if !isLeader {
+		return
+	}
+	index, _, isLeader := kv.rf.Start(originOp)
+	if !isLeader {
+		return
+	}
+	ch := kv.putIfAbsent(index)
+	op := <-ch
+	fmt.Printf("request is %v", originOp)
+	fmt.Println()
+	if equalOp(originOp, op) {
+		reply.WrongLeader = false
+		return
+	}
+}
+
+func equalOp(op Op, op2 Op) bool {
+	return op.Key == op2.Key && op.Value == op2.Value && op.Optype == op2.Optype
 }
 
 //
@@ -51,6 +124,15 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 func (kv *KVServer) Kill() {
 	kv.rf.Kill()
 	// Your code here, if desired.
+}
+
+func (kv *KVServer) putIfAbsent(index int) chan Op {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if _, ok := kv.chMap[index]; !ok {
+		kv.chMap[index] = make(chan Op, 1)
+	}
+	return kv.chMap[index]
 }
 
 //
@@ -82,6 +164,35 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	kv.db = make(map[string]string)
+	kv.chMap = make(map[int]chan Op)
+	kv.cid2Seq = make(map[int64]int)
+
+	go func() {
+		for applyMsg := range kv.applyCh {
+			op := applyMsg.Command.(Op)
+			kv.mu.Lock()
+			maxSeq, found := kv.cid2Seq[op.Cid]
+			// 幂等性实现
+			fmt.Printf("get Op %v", op)
+			fmt.Println()
+			if !found || op.SeqNum > maxSeq {
+				switch op.Optype {
+				case "Put":
+					kv.db[op.Key] = op.Value
+				case "Append":
+					kv.db[op.Key] += op.Value
+				}
+				kv.cid2Seq[op.Cid] = op.SeqNum
+			}
+
+			kv.mu.Unlock()
+			index := applyMsg.CommandIndex
+
+			ch := kv.putIfAbsent(index)
+			ch <- op
+		}
+	}()
 
 	return kv
 }
