@@ -107,7 +107,7 @@ func (rf *Raft) GetState() (int, bool) {
 	// Your code here (2A).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	term = rf.commitIndex
+	term = rf.currentTerm
 	isleader = rf.state == Leader
 
 	return term, isleader
@@ -225,28 +225,26 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	if args.Term > rf.currentTerm {
 		rf.beFollower(args.Term)
-		send(rf.voteCh)
+		// TODO check
+		// send(rf.voteCh)
 	}
-	success := false
-	if args.Term < rf.currentTerm {
-
-	} else if rf.votedFor != NULL && rf.votedFor != args.CandidateId {
-
-	} else if args.LastLogIndex < rf.getLastLogIndex() {
-
-	} else if args.LastLogIndex < rf.getLastLogIndex() && args.LastLogTerm < rf.getLastLogTerm() {
-
+	reply.Term = rf.currentTerm
+	reply.VoteGranted = false
+	if (args.Term < rf.currentTerm) || (rf.votedFor != NULL && rf.votedFor != args.CandidateId) {
+		// Reply false if term < currentTerm (§5.1)  If votedFor is not null and not candidateId,
+	} else if args.LastLogTerm < rf.getLastLogTerm() || (args.LastLogTerm == rf.getLastLogTerm() &&
+		args.LastLogIndex < rf.getLastLogIndex()) {
+		//If the logs have last entries with different terms, then the log with the later term is more up-to-date.
+		// If the logs end with the same term, then whichever log is longer is more up-to-date.
+		// Reply false if candidate’s log is at least as up-to-date as receiver’s log
 	} else {
+		//grant vote
 		rf.votedFor = args.CandidateId
-		success = true
+		reply.VoteGranted = true
 		rf.state = Follower
 		rf.persist()
-		send(rf.voteCh)
+		send(rf.voteCh) //because If election timeout elapses without receiving granting vote to candidate, so wake up
 	}
-
-	reply.VoteGranted = success
-	reply.Term = rf.currentTerm
-
 }
 
 // AppendEntries RPC Handler
@@ -293,17 +291,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	index := args.PrevLogIndex
 	for i := 0; i < len(args.Entries); i++ {
 		index++
-		if index >= len(rf.log) {
-			rf.log = append(rf.log, args.Entries[i:]...)
-			rf.persist()
-			break
+		if index < logSize {
+			if rf.log[index].Term == args.Entries[i].Term {
+				continue
+			} else { //3. If an existing entry conflicts with a new one (same index but different terms),
+				rf.log = rf.log[:index] //delete the existing entry and all that follow it (§5.3)
+			}
 		}
-		if rf.log[index].Term != args.Entries[i].Term {
-			rf.log = rf.log[:index]
-			rf.log = append(rf.log, args.Entries[i:]...)
-			rf.persist()
-			break
-		}
+		rf.log = append(rf.log, args.Entries[i:]...) //4. Append any new entries not already in the log
+		rf.persist()
+		break
 	}
 
 	if args.LeaderCommit > rf.commitIndex {
@@ -432,7 +429,7 @@ func (rf *Raft) startElection() {
 				defer rf.mu.Unlock()
 				if reply.Term > rf.currentTerm {
 					rf.beFollower(reply.Term)
-					send(rf.voteCh)
+					// TODO send(rf.voteCh)
 					return
 				}
 				if rf.state != Candidate || rf.currentTerm != args.Term {
@@ -647,12 +644,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				return
 			default:
 			}
-		}
-	}()
-
-	go func() {
-		for {
-			electionTime := time.Duration(rand.Intn(100)+300) * time.Millisecond
+			electionTime := time.Duration(rand.Intn(200)+300) * time.Millisecond
 			rf.mu.Lock()
 			state := rf.state
 			rf.mu.Unlock()
