@@ -1,13 +1,13 @@
 package raftkv
 
 import (
-	"fmt"
 	"labgob"
 	"labrpc"
 	"log"
 	"raft"
 	"strconv"
 	"sync"
+	"time"
 )
 
 const Debug = 0
@@ -46,6 +46,8 @@ type KVServer struct {
 
 	//幂等性
 	cid2Seq map[int64]int
+
+	killCh chan bool
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -69,11 +71,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 
 	ch := kv.putIfAbsent(index)
-	op := <-ch
-
-	fmt.Printf("request is %v", originOp)
-	fmt.Println()
-
+	op := beNotified(ch)
 	if equalOp(op, originOp) {
 		reply.WrongLeader = false
 		kv.mu.Lock()
@@ -85,34 +83,31 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	originOp := Op{
-		Optype: args.Op,
-		Key:    args.Key,
-		Value:  args.Value,
-		Cid:    args.Cid,
-		SeqNum: args.SeqNum,
-	}
-	_, isLeader := kv.rf.GetState()
+	originOp := Op{args.Op, args.Key, args.Value, args.Cid, args.SeqNum}
 	reply.WrongLeader = true
-	if !isLeader {
-		return
-	}
 	index, _, isLeader := kv.rf.Start(originOp)
+	DPrintf("args %v, %v is Leader %v", args, kv.rf.GetId(), isLeader)
 	if !isLeader {
 		return
 	}
 	ch := kv.putIfAbsent(index)
-	op := <-ch
-	fmt.Printf("request is %v", originOp)
-	fmt.Println()
+	op := beNotified(ch)
 	if equalOp(originOp, op) {
 		reply.WrongLeader = false
-		return
+	}
+}
+
+func beNotified(ch chan Op) Op {
+	select {
+	case op := <-ch:
+		return op
+	case <-time.After(time.Second):
+		return Op{}
 	}
 }
 
 func equalOp(op Op, op2 Op) bool {
-	return op.Key == op2.Key && op.Value == op2.Value && op.Optype == op2.Optype
+	return op.Key == op2.Key && op.Value == op2.Value && op.Optype == op2.Optype && op.SeqNum == op2.SeqNum && op.Cid == op2.Cid
 }
 
 //
@@ -167,15 +162,20 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.db = make(map[string]string)
 	kv.chMap = make(map[int]chan Op)
 	kv.cid2Seq = make(map[int64]int)
+	kv.killCh = make(chan bool)
 
 	go func() {
-		for applyMsg := range kv.applyCh {
+		for {
+			select {
+			case <-kv.killCh:
+				return
+			default:
+			}
+			applyMsg := <-kv.applyCh
 			op := applyMsg.Command.(Op)
 			kv.mu.Lock()
 			maxSeq, found := kv.cid2Seq[op.Cid]
 			// 幂等性实现
-			fmt.Printf("get Op %v", op)
-			fmt.Println()
 			if !found || op.SeqNum > maxSeq {
 				switch op.Optype {
 				case "Put":
@@ -188,7 +188,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 			kv.mu.Unlock()
 			index := applyMsg.CommandIndex
-
 			ch := kv.putIfAbsent(index)
 			ch <- op
 		}

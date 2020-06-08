@@ -2,6 +2,7 @@ package raftkv
 
 import (
 	"labrpc"
+	"time"
 )
 import "crypto/rand"
 import "math/big"
@@ -48,8 +49,8 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 	index := ck.lastLeader
+	args := GetArgs{Key: key}
 	for {
-		args := GetArgs{Key: key}
 		reply := GetReply{}
 		ok := ck.servers[index].Call("KVServer.Get", &args, &reply)
 		if ok && !reply.WrongLeader {
@@ -57,6 +58,7 @@ func (ck *Clerk) Get(key string) string {
 			return reply.Value
 		}
 		index = (index + 1) % len(ck.servers)
+		time.Sleep(time.Duration(100) * time.Millisecond)
 	}
 }
 
@@ -73,21 +75,24 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
 	index := ck.lastLeader
+	args := PutAppendArgs{
+		Key:    key,
+		Value:  value,
+		Op:     op,
+		Cid:    ck.id,
+		SeqNum: ck.seqNum,
+	}
+	ck.seqNum++
 	for {
-		args := PutAppendArgs{
-			Key:    key,
-			Value:  value,
-			Op:     op,
-			Cid:    ck.id,
-			SeqNum: ck.seqNum,
-		}
 		reply := PutAppendReply{}
 		ok := ck.servers[index].Call("KVServer.PutAppend", &args, &reply)
+		DPrintf("node %v return ok is %v, wrongLeader is %v, key is %v, value %v", index, ok, reply.WrongLeader, key, value)
 		if ok && !reply.WrongLeader {
 			ck.lastLeader = index
 			return
 		}
 		index = (index + 1) % len(ck.servers)
+		time.Sleep(time.Duration(100) * time.Millisecond)
 	}
 }
 

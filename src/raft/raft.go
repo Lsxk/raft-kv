@@ -103,14 +103,15 @@ type Raft struct {
 func (rf *Raft) GetState() (int, bool) {
 
 	var term int
-	var isleader bool
 	// Your code here (2A).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	term = rf.currentTerm
-	isleader = rf.state == Leader
+	return term, rf.state == Leader
+}
 
-	return term, isleader
+func (rf *Raft) GetId() int {
+	return rf.me
 }
 
 //
@@ -374,6 +375,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (2B).
 	if isLeader {
+
+		DPrintf("i am leader %v, and i send command %v", rf.me, command)
+
 		index = rf.getLastLogIndex() + 1
 		newLog := Log{
 			Term:    rf.currentTerm,
